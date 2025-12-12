@@ -1,115 +1,207 @@
 'use server';
 
-import { z } from 'zod';
-import postgres from 'postgres';
+import { sql } from '@vercel/postgres';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { signIn } from '@/auth';
-import { AuthError } from 'next-auth';
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });
+import { z } from 'zod';
+import bcrypt from 'bcrypt';
 
-const FormSchema = z.object({
-  id: z.string(),
-  customerId: z.string({
-    invalid_type_error: 'Please select a customer.',
+// ============================================
+// CREAR VENTA Y CALCULAR COMISIONES
+// ============================================
+
+const SaleSchema = z.object({
+  sellerId: z.string().uuid({
+    message: 'Selecciona un vendedor válido',
   }),
-  amount: z.coerce
-    .number()
-    .gt(0, { message: 'Please enter an amount greater than $0.' }),
-  status: z.enum(['pending', 'paid'], {
-    invalid_type_error: 'Please select an invoice status.',
-  }),
-  date: z.string(),
+  amount: z.coerce.number().gt(0, { message: 'El monto debe ser mayor a 0' }),
 });
 
-const CreateInvoice = FormSchema.omit({ id: true, date: true });
-
-export type State = {
+export type SaleState = {
   errors?: {
-    customerId?: string[];
+    sellerId?: string[];
     amount?: string[];
-    status?: string[];
   };
   message?: string | null;
 };
 
-export async function createInvoice(prevState: State, formData: FormData) {
-  const validatedFields = CreateInvoice.safeParse({
-    customerId: formData.get('customerId'),
+export async function createSale(prevState: SaleState, formData: FormData) {
+  const validatedFields = SaleSchema.safeParse({
+    sellerId: formData.get('sellerId'),
     amount: formData.get('amount'),
-    status: formData.get('status'),
   });
 
   if (!validatedFields.success) {
     return {
       errors: validatedFields.error.flatten().fieldErrors,
-      message: 'Missing Fields. Failed to Create Invoice.',
+      message: 'Campos inválidos. No se pudo crear la venta.',
     };
   }
 
-  const { customerId, amount, status } = validatedFields.data;
-  const amountInCents = amount * 100;
-  const date = new Date().toISOString().split('T')[0];
+  const { sellerId, amount } = validatedFields.data;
 
   try {
-    await sql`
-      INSERT INTO invoices (customer_id, amount, status, date)
-      VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
+    // 1. Crear la venta
+    const sale = await sql`
+      INSERT INTO sales (seller_id, amount)
+      VALUES (${sellerId}, ${amount})
+      RETURNING *
     `;
+
+    const saleId = sale.rows[0].id;
+
+    // 2. Obtener cadena de referidos (hasta 3 niveles)
+    const chain = await sql`
+      WITH RECURSIVE referral_chain AS (
+        SELECT id, referrer_id, level, 1 as depth
+        FROM users WHERE id = ${sellerId}
+        
+        UNION ALL
+        
+        SELECT u.id, u.referrer_id, u.level, rc.depth + 1
+        FROM users u
+        JOIN referral_chain rc ON u.id = rc.referrer_id
+        WHERE rc.depth < 3
+      )
+      SELECT * FROM referral_chain ORDER BY depth
+    `;
+
+    // 3. Calcular y guardar comisiones
+    const rates: { [key: number]: { percentage: number; multiplier: number } } =
+      {
+        1: { percentage: 10.0, multiplier: 0.1 },
+        2: { percentage: 5.0, multiplier: 0.05 },
+        3: { percentage: 2.5, multiplier: 0.025 },
+      };
+
+    for (const person of chain.rows) {
+      const depth = Number(person.depth);
+      const rate = rates[depth];
+
+      if (!rate) continue;
+
+      const commissionAmount = amount * rate.multiplier;
+
+      await sql`
+        INSERT INTO commissions (sale_id, user_id, amount, percentage, level)
+        VALUES (
+          ${saleId}, 
+          ${person.id}, 
+          ${commissionAmount}, 
+          ${rate.percentage}, 
+          ${depth}
+        )
+      `;
+    }
   } catch (error) {
-    // We'll also log the error to the console for now
-    console.error(error);
+    console.error('Error creating sale:', error);
     return {
-      message: 'Database Error: Failed to Create Invoice.',
+      message: 'Error de base de datos: No se pudo crear la venta.',
     };
   }
 
-  revalidatePath('/dashboard/invoices');
-  redirect('/dashboard/invoices');
+  revalidatePath('/dashboard/sales');
+  redirect('/dashboard/sales');
 }
 
-const UpdateInvoice = FormSchema.omit({ id: true, date: true });
+// ============================================
+// ELIMINAR VENTA
+// ============================================
 
-export async function updateInvoice(
-  id: string,
-  prevState: State,
+export async function deleteSale(id: string) {
+  try {
+    // Las comisiones se eliminan automáticamente por CASCADE
+    await sql`DELETE FROM sales WHERE id = ${id}`;
+    revalidatePath('/dashboard/sales');
+    return { message: 'Venta eliminada.' };
+  } catch (error) {
+    console.error('Error deleting sale:', error);
+    return { message: 'Error de base de datos: No se pudo eliminar la venta.' };
+  }
+}
+
+// ============================================
+// CREAR AFILIADO
+// ============================================
+
+const AffiliateSchema = z.object({
+  name: z.string().min(1, { message: 'El nombre es requerido' }),
+  email: z.string().email({ message: 'Email inválido' }),
+  password: z.string().min(6, { message: 'Mínimo 6 caracteres' }),
+  level: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3, { message: 'Nivel debe ser 1, 2 o 3' }),
+  referrerId: z.string().uuid().nullable(),
+});
+
+export type AffiliateState = {
+  errors?: {
+    name?: string[];
+    email?: string[];
+    password?: string[];
+    level?: string[];
+    referrerId?: string[];
+  };
+  message?: string | null;
+};
+
+export async function createAffiliate(
+  prevState: AffiliateState,
   formData: FormData
 ) {
-  const validatedFields = UpdateInvoice.safeParse({
-    customerId: formData.get('customerId'),
-    amount: formData.get('amount'),
-    status: formData.get('status'),
+  const validatedFields = AffiliateSchema.safeParse({
+    name: formData.get('name'),
+    email: formData.get('email'),
+    password: formData.get('password'),
+    level: formData.get('level'),
+    referrerId: formData.get('referrerId') || null,
   });
 
   if (!validatedFields.success) {
     return {
       errors: validatedFields.error.flatten().fieldErrors,
-      message: 'Missing Fields. Failed to Update Invoice.',
+      message: 'Campos inválidos. No se pudo crear el afiliado.',
     };
   }
 
-  const { customerId, amount, status } = validatedFields.data;
-  const amountInCents = amount * 100;
+  const { name, email, password, level, referrerId } = validatedFields.data;
 
   try {
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
     await sql`
-      UPDATE invoices
-      SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
-      WHERE id = ${id}
+      INSERT INTO users (name, email, password, level, referrer_id)
+      VALUES (${name}, ${email}, ${hashedPassword}, ${level}, ${referrerId})
     `;
-  } catch (error) {
-    return { message: 'Database Error: Failed to Update Invoice.' };
+  } catch (error: any) {
+    console.error('Error creating affiliate:', error);
+
+    if (error?.message?.includes('duplicate key')) {
+      return {
+        message: 'Error: Ya existe un usuario con ese email.',
+      };
+    }
+
+    return {
+      message: 'Error de base de datos: No se pudo crear el afiliado.',
+    };
   }
 
-  revalidatePath('/dashboard/invoices');
-  redirect('/dashboard/invoices');
+  revalidatePath('/dashboard/affiliates');
+  redirect('/dashboard/affiliates');
 }
 
-export async function deleteInvoice(id: string) {
-  throw new Error('Failed to Delete Invoice');
-  await sql`DELETE FROM invoices WHERE id = ${id}`;
-  revalidatePath('/dashboard/invoices');
-}
+// ============================================
+// AUTENTICACIÓN (temporal)
+// ============================================
+
+// Reemplaza la función authenticate temporal con esta:
+
+import { signIn } from '@/auth';
+import { AuthError } from 'next-auth';
 
 export async function authenticate(
   prevState: string | undefined,
@@ -121,9 +213,9 @@ export async function authenticate(
     if (error instanceof AuthError) {
       switch (error.type) {
         case 'CredentialsSignin':
-          return 'Invalid credentials.';
+          return 'Credenciales inválidas.';
         default:
-          return 'Something went wrong.';
+          return 'Algo salió mal.';
       }
     }
     throw error;

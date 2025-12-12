@@ -1,83 +1,28 @@
-import postgres from 'postgres';
-import {
-  CustomerField,
-  CustomersTableType,
-  InvoiceForm,
-  InvoicesTable,
-  LatestInvoiceRaw,
-  Revenue,
-} from './definitions';
-import { formatCurrency } from './utils';
+import { sql } from '@vercel/postgres';
+import { unstable_noStore as noStore } from 'next/cache';
 
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });
-
-export async function fetchRevenue() {
-  try {
-    // Artificially delay a response for demo purposes.
-    // Don't do this in production :)
-
-    // console.log('Fetching revenue data...');
-    // await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    const data = await sql<Revenue[]>`SELECT * FROM revenue`;
-
-    // console.log('Data fetch completed after 3 seconds.');
-
-    return data;
-  } catch (error) {
-    console.error('Database Error:', error);
-    throw new Error('Failed to fetch revenue data.');
-  }
-}
-
-export async function fetchLatestInvoices() {
-  try {
-    const data = await sql<LatestInvoiceRaw[]>`
-      SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
-      ORDER BY invoices.date DESC
-      LIMIT 5`;
-
-    const latestInvoices = data.map((invoice) => ({
-      ...invoice,
-      amount: formatCurrency(invoice.amount),
-    }));
-    return latestInvoices;
-  } catch (error) {
-    console.error('Database Error:', error);
-    throw new Error('Failed to fetch the latest invoices.');
-  }
-}
-
+// Dashboard: Estadísticas generales
 export async function fetchCardData() {
+  noStore();
   try {
-    // You can probably combine these into a single SQL query
-    // However, we are intentionally splitting them to demonstrate
-    // how to initialize multiple queries in parallel with JS.
-    const invoiceCountPromise = sql`SELECT COUNT(*) FROM invoices`;
-    const customerCountPromise = sql`SELECT COUNT(*) FROM customers`;
-    const invoiceStatusPromise = sql`SELECT
-         SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS "paid",
-         SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS "pending"
-         FROM invoices`;
+    const salesCountPromise = sql`SELECT COUNT(*) FROM sales`;
+    const totalCommissionsPromise = sql`SELECT SUM(amount) FROM commissions`;
+    const affiliatesCountPromise = sql`SELECT COUNT(*) FROM users`;
 
     const data = await Promise.all([
-      invoiceCountPromise,
-      customerCountPromise,
-      invoiceStatusPromise,
+      salesCountPromise,
+      totalCommissionsPromise,
+      affiliatesCountPromise,
     ]);
 
-    const numberOfInvoices = Number(data[0][0].count ?? '0');
-    const numberOfCustomers = Number(data[1][0].count ?? '0');
-    const totalPaidInvoices = formatCurrency(data[2][0].paid ?? '0');
-    const totalPendingInvoices = formatCurrency(data[2][0].pending ?? '0');
+    const numberOfSales = Number(data[0].rows[0].count ?? '0');
+    const totalCommissionsAmount = Number(data[1].rows[0].sum ?? '0');
+    const numberOfAffiliates = Number(data[2].rows[0].count ?? '0');
 
     return {
-      numberOfCustomers,
-      numberOfInvoices,
-      totalPaidInvoices,
-      totalPendingInvoices,
+      numberOfSales,
+      totalCommissionsAmount,
+      numberOfAffiliates,
     };
   } catch (error) {
     console.error('Database Error:', error);
@@ -85,134 +30,213 @@ export async function fetchCardData() {
   }
 }
 
+// Comisiones agrupadas por nivel
+export async function fetchCommissionsByLevel() {
+  noStore();
+  try {
+    const data = await sql`
+      SELECT 
+        level,
+        COUNT(*) as count,
+        SUM(amount) as total
+      FROM commissions
+      GROUP BY level
+      ORDER BY level
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch commissions by level.');
+  }
+}
+
+// Últimas 5 ventas
+export async function fetchLatestSales() {
+  noStore();
+  try {
+    const data = await sql`
+      SELECT 
+        sales.id,
+        sales.amount,
+        sales.created_at,
+        users.name,
+        users.email
+      FROM sales
+      JOIN users ON sales.seller_id = users.id
+      ORDER BY sales.created_at DESC
+      LIMIT 5
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch latest sales.');
+  }
+}
+
+// Todas las ventas con filtro y paginación
 const ITEMS_PER_PAGE = 6;
-export async function fetchFilteredInvoices(
-  query: string,
-  currentPage: number
-) {
+
+export async function fetchFilteredSales(query: string, currentPage: number) {
+  noStore();
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
 
   try {
-    const invoices = await sql<InvoicesTable[]>`
+    const sales = await sql`
       SELECT
-        invoices.id,
-        invoices.amount,
-        invoices.date,
-        invoices.status,
-        customers.name,
-        customers.email,
-        customers.image_url
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
+        sales.id,
+        sales.amount,
+        sales.created_at,
+        users.name,
+        users.email
+      FROM sales
+      JOIN users ON sales.seller_id = users.id
       WHERE
-        customers.name ILIKE ${`%${query}%`} OR
-        customers.email ILIKE ${`%${query}%`} OR
-        invoices.amount::text ILIKE ${`%${query}%`} OR
-        invoices.date::text ILIKE ${`%${query}%`} OR
-        invoices.status ILIKE ${`%${query}%`}
-      ORDER BY invoices.date DESC
+        users.name ILIKE ${`%${query}%`} OR
+        users.email ILIKE ${`%${query}%`} OR
+        sales.amount::text ILIKE ${`%${query}%`}
+      ORDER BY sales.created_at DESC
       LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
     `;
 
-    return invoices;
+    return sales.rows;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch invoices.');
+    throw new Error('Failed to fetch sales.');
   }
 }
 
-export async function fetchInvoicesPages(query: string) {
+// Contar páginas de ventas
+export async function fetchSalesPages(query: string) {
+  noStore();
   try {
-    const data = await sql`SELECT COUNT(*)
-    FROM invoices
-    JOIN customers ON invoices.customer_id = customers.id
-    WHERE
-      customers.name ILIKE ${`%${query}%`} OR
-      customers.email ILIKE ${`%${query}%`} OR
-      invoices.amount::text ILIKE ${`%${query}%`} OR
-      invoices.date::text ILIKE ${`%${query}%`} OR
-      invoices.status ILIKE ${`%${query}%`}
-  `;
+    const count = await sql`
+      SELECT COUNT(*)
+      FROM sales
+      JOIN users ON sales.seller_id = users.id
+      WHERE
+        users.name ILIKE ${`%${query}%`} OR
+        users.email ILIKE ${`%${query}%`} OR
+        sales.amount::text ILIKE ${`%${query}%`}
+    `;
 
-    const totalPages = Math.ceil(Number(data[0].count) / ITEMS_PER_PAGE);
+    const totalPages = Math.ceil(Number(count.rows[0].count) / ITEMS_PER_PAGE);
     return totalPages;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch total number of invoices.');
+    throw new Error('Failed to fetch total number of sales.');
   }
 }
 
-export async function fetchInvoiceById(id: string) {
+// Lista de todos los afiliados
+export async function fetchAffiliates() {
+  noStore();
   try {
-    const data = await sql<InvoiceForm[]>`
-      SELECT
-        invoices.id,
-        invoices.customer_id,
-        invoices.amount,
-        invoices.status
-      FROM invoices
-      WHERE invoices.id = ${id};
+    const data = await sql`
+      SELECT 
+        u.id,
+        u.name,
+        u.email,
+        u.level,
+        r.name as referrer_name
+      FROM users u
+      LEFT JOIN users r ON u.referrer_id = r.id
+      ORDER BY u.level DESC, u.created_at DESC
     `;
-
-    const invoice = data.map((invoice) => ({
-      ...invoice,
-      // Convert amount from cents to dollars
-      amount: invoice.amount / 100,
-    }));
-
-    return invoice[0];
+    return data.rows;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch invoice.');
+    throw new Error('Failed to fetch affiliates.');
   }
 }
 
-export async function fetchCustomers() {
+// Afiliados filtrados por nivel
+export async function fetchAffiliatesByLevel(level: number) {
+  noStore();
   try {
-    const customers = await sql<CustomerField[]>`
+    const data = await sql`
+      SELECT 
+        u.id,
+        u.name,
+        u.email,
+        u.level,
+        r.name as referrer_name,
+        COUNT(DISTINCT s.id) as total_sales,
+        COALESCE(SUM(c.amount), 0) as total_commissions
+      FROM users u
+      LEFT JOIN users r ON u.referrer_id = r.id
+      LEFT JOIN sales s ON s.seller_id = u.id
+      LEFT JOIN commissions c ON c.user_id = u.id
+      WHERE u.level = ${level}
+      GROUP BY u.id, u.name, u.email, u.level, r.name
+      ORDER BY total_commissions DESC
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch affiliates by level.');
+  }
+}
+
+// Obtener un afiliado específico por ID
+export async function fetchAffiliateById(id: string) {
+  noStore();
+  try {
+    const data = await sql`
       SELECT
         id,
-        name
-      FROM customers
-      ORDER BY name ASC
+        name,
+        email,
+        level,
+        referrer_id
+      FROM users
+      WHERE id = ${id}
     `;
-
-    return customers;
-  } catch (err) {
-    console.error('Database Error:', err);
-    throw new Error('Failed to fetch all customers.');
+    return data.rows[0];
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch affiliate.');
   }
 }
 
-export async function fetchFilteredCustomers(query: string) {
+// Lista de vendedores (nivel 1) para forms
+export async function fetchSellers() {
+  noStore();
   try {
-    const data = await sql<CustomersTableType[]>`
-		SELECT
-		  customers.id,
-		  customers.name,
-		  customers.email,
-		  customers.image_url,
-		  COUNT(invoices.id) AS total_invoices,
-		  SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending,
-		  SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid
-		FROM customers
-		LEFT JOIN invoices ON customers.id = invoices.customer_id
-		WHERE
-		  customers.name ILIKE ${`%${query}%`} OR
-        customers.email ILIKE ${`%${query}%`}
-		GROUP BY customers.id, customers.name, customers.email, customers.image_url
-		ORDER BY customers.name ASC
-	  `;
+    const data = await sql`
+      SELECT id, name, email
+      FROM users
+      WHERE level = 1
+      ORDER BY name ASC
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch sellers.');
+  }
+}
 
-    const customers = data.map((customer) => ({
-      ...customer,
-      total_pending: formatCurrency(customer.total_pending),
-      total_paid: formatCurrency(customer.total_paid),
-    }));
+// Lista de posibles referidores según nivel
+export async function fetchPotentialReferrers(level: number) {
+  noStore();
+  try {
+    // Si es nivel 1, puede referir a nivel 2
+    // Si es nivel 2, puede referir a nivel 3
+    // Si es nivel 3, no tiene referidor
+    const referrerLevel = level + 1;
 
-    return customers;
-  } catch (err) {
-    console.error('Database Error:', err);
-    throw new Error('Failed to fetch customer table.');
+    if (referrerLevel > 3) {
+      return [];
+    }
+
+    const data = await sql`
+      SELECT id, name, email, level
+      FROM users
+      WHERE level = ${referrerLevel}
+      ORDER BY name ASC
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch potential referrers.');
   }
 }
