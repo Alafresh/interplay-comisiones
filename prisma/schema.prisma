@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Commission {
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  saleId     String   @map("sale_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  amount     Decimal  @db.Decimal(10, 2)
+  percentage Decimal  @db.Decimal(5, 2)
+  level      Int
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  
+  sale       Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("commissions")
+}
+
+model Sale {
+  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  sellerId    String       @map("seller_id") @db.Uuid
+  amount      Decimal      @db.Decimal(10, 2)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
+  
+  commissions Commission[]
+  seller      User         @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@map("sales")
+}
+
+model User {
+  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String       @db.VarChar(255)
+  email       String       @unique
+  password    String
+  level       Int
+  referrerId  String?      @map("referrer_id") @db.Uuid
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
+  
+  commissions Commission[]
+  sales       Sale[]
+  referrer    User?        @relation("UserReferrals", fields: [referrerId], references: [id])
+  referrals   User[]       @relation("UserReferrals")
+
+  @@map("users")
+}
