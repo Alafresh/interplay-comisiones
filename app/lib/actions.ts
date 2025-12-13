@@ -6,10 +6,6 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import bcrypt from 'bcrypt';
 
-// ============================================
-// CREAR VENTA Y CALCULAR COMISIONES
-// ============================================
-
 const SaleSchema = z.object({
   sellerId: z.string().uuid({
     message: 'Selecciona un vendedor válido',
@@ -104,10 +100,6 @@ export async function createSale(prevState: SaleState, formData: FormData) {
   redirect('/dashboard/sales');
 }
 
-// ============================================
-// ELIMINAR VENTA
-// ============================================
-
 export async function deleteSale(id: string) {
   try {
     // Las comisiones se eliminan automáticamente por CASCADE
@@ -119,10 +111,6 @@ export async function deleteSale(id: string) {
     return { message: 'Error de base de datos: No se pudo eliminar la venta.' };
   }
 }
-
-// ============================================
-// CREAR AFILIADO
-// ============================================
 
 const AffiliateSchema = z.object({
   name: z.string().min(1, { message: 'El nombre es requerido' }),
@@ -193,12 +181,6 @@ export async function createAffiliate(
   revalidatePath('/dashboard/affiliates');
   redirect('/dashboard/affiliates');
 }
-
-// ============================================
-// AUTENTICACIÓN (temporal)
-// ============================================
-
-// Reemplaza la función authenticate temporal con esta:
 
 import { signIn } from '@/auth';
 import { AuthError } from 'next-auth';
