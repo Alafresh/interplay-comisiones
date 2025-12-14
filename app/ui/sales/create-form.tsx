@@ -15,7 +15,6 @@ export default function Form({ sellers }: { sellers: any[] }) {
 
   return (
     <form action={formAction}>
-      {/* resto del código igual */}
       <div className='rounded-md bg-gray-50 p-4 md:p-6'>
         <div className='mb-4'>
           <label htmlFor='seller' className='mb-2 block text-sm font-medium'>
