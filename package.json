@@ -8,8 +8,6 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
-    "@prisma/adapter-pg": "^7.1.0",
-    "@prisma/client": "^7.1.0",
     "@tailwindcss/forms": "^0.5.10",
     "@vercel/postgres": "^0.10.0",
     "autoprefixer": "10.4.20",
@@ -37,7 +35,6 @@
     "@types/react-dom": "19.0.3",
     "eslint": "^9.39.1",
     "eslint-config-next": "^16.0.10",
-    "prisma": "^7.1.0",
     "tsx": "^4.21.0"
   },
   "pnpm": {
