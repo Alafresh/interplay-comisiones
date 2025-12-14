@@ -190,7 +190,12 @@ export async function authenticate(
   formData: FormData
 ) {
   try {
-    await signIn('credentials', formData);
+    const redirectTo = formData.get('redirectTo')?.toString() || '/dashboard';
+    await signIn('credentials', {
+      email: formData.get('email'),
+      password: formData.get('password'),
+      redirectTo,
+    });
   } catch (error) {
     if (error instanceof AuthError) {
       switch (error.type) {
